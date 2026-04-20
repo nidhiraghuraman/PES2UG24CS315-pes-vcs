@@ -2,55 +2,131 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <dirent.h>
-#include "pes.h"
 #include "index.h"
+#include "object.h"
 
+#define INDEX_FILE ".pes/index"
+
+/* -------------------- LOAD INDEX -------------------- */
 int index_load(Index *index) {
-    FILE *f = fopen(".pes/index", "rb");
-    if (!f) {
-        index->count = 0;
+    FILE *fp = fopen(INDEX_FILE, "r");
+
+    index->count = 0;
+
+    // If index file does not exist → empty index
+    if (!fp) {
         return 0;
     }
-    fread(&index->count, sizeof(int), 1, f);
-    fread(index->entries, sizeof(IndexEntry), index->count, f);
-    fclose(f);
+
+    char line[1024];
+
+    while (fgets(line, sizeof(line), fp)) {
+        IndexEntry entry;
+
+        sscanf(line, "%o %s %ld %ld %s",
+               &entry.mode,
+               entry.hash,
+               &entry.mtime,
+               &entry.size,
+               entry.path);
+
+        index->entries[index->count++] = entry;
+    }
+
+    fclose(fp);
     return 0;
 }
 
+/* -------------------- SAVE INDEX -------------------- */
 int index_save(const Index *index) {
-    mkdir(".pes", 0755); 
-    FILE *f = fopen(".pes/index", "wb");
-    if (!f) return -1;
-    fwrite(&index->count, sizeof(int), 1, f);
-    fwrite(index->entries, sizeof(IndexEntry), index->count, f);
-    fclose(f);
+    FILE *fp = fopen(INDEX_FILE, "w");
+    if (!fp) {
+        perror("index_save");
+        return -1;
+    }
+
+    for (int i = 0; i < index->count; i++) {
+        fprintf(fp, "%o %s %ld %ld %s\n",
+                index->entries[i].mode,
+                index->entries[i].hash,
+                index->entries[i].mtime,
+                index->entries[i].size,
+                index->entries[i].path);
+    }
+
+    fclose(fp);
     return 0;
 }
 
+/* -------------------- ADD FILE -------------------- */
 int index_add(Index *index, const char *path) {
+
+    // Check if file already exists → update
     for (int i = 0; i < index->count; i++) {
-        if (strcmp(index->entries[i].path, path) == 0) return 0;
+        if (strcmp(index->entries[i].path, path) == 0) {
+            // Remove old entry by shifting
+            for (int j = i; j < index->count - 1; j++) {
+                index->entries[j] = index->entries[j + 1];
+            }
+            index->count--;
+            break;
+        }
     }
-    if (index->count < MAX_INDEX_ENTRIES) {
-        strncpy(index->entries[index->count].path, path, sizeof(index->entries[index->count].path) - 1);
-        memset(index->entries[index->count].hash.hash, 0, 32);
-        index->entries[index->count].mode = 0644;
-        index->count++;
-        index_save(index); 
-        return 0;
+
+    // Open file
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        perror("index_add fopen");
+        return -1;
     }
-    return -1;
+
+    // Get file size
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    rewind(fp);
+
+    // Read file data
+    char *data = malloc(size);
+    fread(data, 1, size, fp);
+    fclose(fp);
+
+    // Compute hash + store object
+    char hash[65];   // SHA-256 hex string
+    object_write("blob", data, size, hash);
+
+    free(data);
+
+    // Get file metadata
+    struct stat st;
+    stat(path, &st);
+
+    // Create entry
+    IndexEntry entry;
+    entry.mode = 0644;
+    strcpy(entry.hash, hash);
+    entry.mtime = st.st_mtime;
+    entry.size = size;
+    strcpy(entry.path, path);
+
+    // Add to index
+    index->entries[index->count++] = entry;
+
+    // Save index
+    return index_save(index);
 }
 
+/* -------------------- STATUS -------------------- */
 int index_status(const Index *index) {
     printf("Staged changes:\n");
+
+    if (index->count == 0) {
+        printf("  (nothing to show)\n");
+        return 0;
+    }
+
     for (int i = 0; i < index->count; i++) {
         printf("  staged:   %s\n", index->entries[i].path);
     }
+
     return 0;
 }
-// Binary index uses fixed-size entries for performance
-// index_load handles initial repository state
