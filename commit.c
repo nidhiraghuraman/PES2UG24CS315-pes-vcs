@@ -194,8 +194,40 @@ int head_update(const ObjectID *new_commit) {
 //
 // Returns 0 on success, -1 on error.
 int commit_create(const char *message, ObjectID *commit_id_out) {
-    // TODO: Implement commit creation
-    // (See Lab Appendix for logical steps)
-    (void)message; (void)commit_id_out;
-    return -1;
+ObjectID tree_id;
+    if (tree_from_index(&tree_id) < 0) return -1;
+
+    char buffer[4096];
+    int len = 0;
+
+    // 1. Add Tree line (Manual Hex conversion)
+    len += sprintf(buffer + len, "tree ");
+    for(int i = 0; i < 32; i++) {
+        len += sprintf(buffer + len, "%02x", (unsigned char)tree_id.hash[i]);
+    }
+    len += sprintf(buffer + len, "\n");
+
+    // 2. Add Parent line (if it exists)
+    ObjectID parent_id;
+    if (head_read(&parent_id) == 0) {
+        len += sprintf(buffer + len, "parent ");
+        for(int i = 0; i < 32; i++) {
+            len += sprintf(buffer + len, "%02x", (unsigned char)parent_id.hash[i]);
+        }
+        len += sprintf(buffer + len, "\n");
+    }
+
+    // 3. Add Author, Timestamp, and Message
+    len += sprintf(buffer + len, "author %s\n", pes_author());
+    len += sprintf(buffer + len, "timestamp %lld\n", (long long)time(NULL));
+    len += sprintf(buffer + len, "\n%s\n", message);
+
+    // 4. Write as a COMMIT object
+    ObjectID commit_id;
+    if (object_write(OBJ_COMMIT, buffer, len, &commit_id) < 0) return -1;
+
+    // 5. Update HEAD
+    return head_update(&commit_id);
 }
+// Final check of author metadata
+// Final check of parent linkage
